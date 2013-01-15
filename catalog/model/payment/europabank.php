@@ -10,7 +10,7 @@ class ModelPaymentEuropabank extends Model {
 
 		}
 
-		$this->load->language( 'payment/europabank' );
+		$this->language->load( 'payment/europabank' );
 
 		if ( $this->config->get( 'europabank_status' ) ) {
 
@@ -44,6 +44,7 @@ class ModelPaymentEuropabank extends Model {
       		$method_data = array(
         		'id'         => 'europabank',
         		'title'      => $this->language->get( 'text_title' ),
+            'code'      => 'europabank',
 				'sort_order' => $this->config->get( 'europabank_sort_order' )
       		);
 
