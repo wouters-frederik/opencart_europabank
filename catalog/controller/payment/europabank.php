@@ -1,6 +1,6 @@
 <?php
 /**
- * opencart Europabank
+ * opencart Europabank controller
  *
  * This payment method allows you to integrate europabank payments into your opencart.
  *
@@ -25,16 +25,12 @@
 
 class ControllerPaymentEuropabank extends Controller {
 
-  private $EuropabankIdeal;
-
-
   /**
    * Called by OpenCart at the third step of the checkout process
    *
    * @return void
    */
   protected function index( ) {
-
     $this->load->model( 'checkout/order' );
 
     $aOrder  = $this->model_checkout_order->getOrder( $this->session->data[ 'order_id' ] );
@@ -55,7 +51,6 @@ class ControllerPaymentEuropabank extends Controller {
       $this->template = 'default/template/payment/europabank.tpl';
 
     }
-
     $this->render( );
 
   }
@@ -66,16 +61,11 @@ class ControllerPaymentEuropabank extends Controller {
    * @return void
    */
   public function bank( ) {
-
     $this->language->load( 'payment/europabank' );
     $this->load->model( 'checkout/order' );
     $this->load->model( 'payment/europabank' );
 
     $aOrder     = $this->model_checkout_order->getOrder( $this->session->data[ 'order_id' ] );
-    //$sDescription = urlencode( html_entity_decode( $this->config->get( 'config_name' ), ENT_QUOTES, 'UTF-8' ) . ' - #' . $aOrder[ 'order_id' ] );
-
-    //$sReturnURL   = urlencode( HTTPS_SERVER . 'index.php?route=payment/europabank/callback' );
-    //$sReportURL   = urlencode( HTTPS_SERVER . 'index.php?route=payment/europabank/report' );
 
     $sReturnURL   = HTTPS_SERVER . 'index.php?route=payment/europabank/callback' ;
     $sReportURL   = HTTPS_SERVER . 'index.php?route=payment/europabank/report' ;
@@ -84,7 +74,7 @@ class ControllerPaymentEuropabank extends Controller {
     $merchant['uid'] = $this->config->get( 'europabank_mpi' );
     $merchant['storename'] = $this->config->get( 'config_name' );
     $merchant['feedbacktype'] = 'OFFLINE';
-    $merchant['feedbackurl'] = $sReturnURL;
+    $merchant['feedbackurl'] = $sReportURL;
     $merchant['redirecttype'] = 'INDIRECT';
     $merchant['redirecturl'] = $sReturnURL;
     $merchant['template'] = '';
@@ -105,44 +95,57 @@ class ControllerPaymentEuropabank extends Controller {
     $transaction['amount'] = intval((string)($aOrder['total'] * 100));
     $description = 'Order ' . $aOrder['order_id'] . ' at ' . $this->config->get( 'config_name' );
     $transaction['description'] = $description;
-    $transaction['hash'] = '';
+
     $transaction['hash'] = $this->calculateHash(
       $this->config->get( 'europabank_mpi' ) ,
       $aOrder['order_id'] ,
       $transaction['amount'] ,
       $description ,
-      $this->config->get( 'europabank_ss' ));
+      $this->config->get( 'europabank_ss' )
+    );
 
     $return = $this->create_request($merchant , $client , $transaction);
-
     if ( $return ) {
-
-      $this->model_payment_europabank->insertOrderTransaction( $aOrder[ 'order_id' ], $this->EuropabankIdeal->getTransactionID( ) );
-
-      $this->redirect( $this->EuropabankIdeal->getURL( ) );
-
+      $this->model_payment_europabank->insertOrderTransaction(
+        $aOrder[ 'order_id' ],
+        $transaction['description'],
+        $transaction['amount'],
+        0);
+      header("Location: " .  $return);
     }
-
   }
+
+ /**
+   * Send mail report to client (legal obligation)
+   */
+  public function sendMail() {
+
+    $this->load->model( 'checkout/order' );
+    $this->load->model( 'account/order');
+    $order_id = 1;
+    $order = $this->model_checkout_order->getOrder( $order_id);
+    if ($order) {
+      $this->model_checkout_order->confirm($order_id, $this->config->get('config_order_status_id') );
+    }
+}
+
  /**
   * Create XML request
   */
  function create_request($merchant, $client , $transaction){
   // create request
-  foreach($merchant as $key => $param){
-    //$merchant[$key] = $this->xmlEscape($param);
-  }
 
   foreach($client as $key => $param){
     $client[$key] = $this->xmlEscape($param);
   }
-    $request = '<?xml version="1.0" encoding="UTF-8"?>
+
+  $request = '<?xml version="1.0" encoding="UTF-8"?>
     <MPI_Interface>
       <Authorize>
       <version>1.1</version>
       <Merchant>
         <uid>' .          $merchant['uid'] . '</uid>
-        <beneficiary>' . $merchant['storename'] . '</beneficiary>
+        <beneficiary>' . substr($merchant['storename'],0,25) . '</beneficiary>
         <title>' . $merchant['storename']  . '</title>
         <feedbacktype>' .          $merchant['feedbacktype']  . '</feedbacktype>
         <feedbackurl>' . $merchant['feedbackurl'] . '</feedbackurl>
@@ -189,20 +192,19 @@ class ControllerPaymentEuropabank extends Controller {
       echo $errorMessage;
     }
     else {
-      header("Location: " .  $xml->Response->url);
-      exit();
+      return $xml->Response->url;
     }
     return false;
   }
 
   private function calculateHash($uid , $order_id , $amount , $description , $secret) {
-    return sha1(
+    return strtoupper(sha1(
       $uid.
       $order_id .
       $amount .
       $description  .
       $secret
-      );
+    ));
   }
 
   /**
@@ -211,7 +213,52 @@ class ControllerPaymentEuropabank extends Controller {
    * @return void
    */
   public function callback( ) {
+    $this->language->load( 'payment/europabank' );
+    $this->load->model( 'checkout/order' );
+    $this->load->model( 'payment/europabank' );
 
+    $order_id = $this->request->post['Orderid'];
+    $payed = $this->validatePayment();
+    $transaction = $this->model_payment_europabank->getTransactionByOrderId($order_id);
+    $this->model_payment_europabank->deleteOrderTransaction( $transaction['customer_transaction_id'] );
+
+    if ( $payed ) {
+      $this->model_checkout_order->confirm( $order_id, $this->config->get( 'europabank_order_status_id' ) );
+      header( 'Location: ' . HTTPS_SERVER . 'index.php?route=checkout/success' );
+    } else {
+      //header( 'Location: ' . HTTPS_SERVER . 'index.php?route=checkout/success' );
+      echo 'Helaas, de betaling is niet gelukt..';
+    }
+
+  }
+
+  /**
+   * Make sure a order is updated, even if the customer doesn't reach the callback page
+   *
+   * @return void
+   */
+  public function report( ) {
+    $this->language->load( 'payment/europabank' );
+    $this->load->model( 'checkout/order' );
+    $this->load->model( 'payment/europabank' );
+
+    $order_id = $this->request->post['Orderid'];
+    $transaction = $this->model_payment_europabank->getTransactionByOrderId($order_id);
+    $this->model_payment_europabank->deleteOrderTransaction( $transaction['customer_transaction_id'] );
+    $payed = $this->validatePayment();
+    if ( $payed ) {
+      $this->model_checkout_order->confirm( $order_id, $this->config->get( 'europabank_order_status_id' ) );
+       return 'OK';
+    } else {
+       http_response_code(400);
+    }
+
+  }
+
+  /**
+   * Validate the payment.
+   */
+  function validatePayment(){
     $this->language->load( 'payment/europabank' );
     $this->load->model( 'checkout/order' );
     $this->load->model( 'payment/europabank' );
@@ -222,18 +269,18 @@ class ControllerPaymentEuropabank extends Controller {
     $order_id = $this->request->post['Orderid'];
     $status = $this->request->post['Status'];
     $brand = $this->request->post['Brand'];
-    $refnr = $this->request->post['Refnr'];
-    $txtype = $this->request->post['Txtype'];
-
+    $refnr = isset($this->request->post['Refnr'])?$this->request->post['Refnr']:'';
+    $txtype = isset($this->request->post['Txtype'])?$this->request->post['Txtype']:'';
 
     $order = $this->model_checkout_order->getOrder( $order_id );
+    $transaction = $this->model_payment_europabank->getTransactionByOrderId($order_id);
 
-    $signature = $this->calculateHash(
-      $this->config->get( 'europabank_mpi' ) ,
-      $aOrder['order_id'] ,
-      $transaction['amount'] ,
-      $description ,
-      $this->config->get( 'europabank_ss' ));
+    // id orderid and server shared secret
+    $signature = strtoupper(sha1(
+      $_REQUEST['Id'] .
+      $_REQUEST['Orderid'] .
+      $this->config->get( 'europabank_cs' )
+    ));
 
     if ($brand == 'V')
       $brand = 'Visa';
@@ -244,21 +291,23 @@ class ControllerPaymentEuropabank extends Controller {
     else if ($brand == '?')
       $brand = 'Not chosen yet';
 
+    $authorized = FALSE;
     switch ($status) {
         case "AU":
         $txtype = $txtype;
-        if (strtoupper($hash) != strtoupper($signature))
-        {
-          $newState = 'CANCELED';
-          if ($txtype == '05')
-            $comment = 'HASH invalid, Transaction approved by MPI, Refnr ' . $refnr;
-          else
-            $comment = 'HASH invalid, Transaction authorized by MPI, Refnr ' . $refnr;
+        $newState = 'CANCELED';
+        if ($txtype == '05') {
+          $comment = 'Transaction approved by MPI, Refnr ' . $refnr;
+          $authorized = TRUE;
+        }
+        else if($txtype == '02') {
+          $comment = 'Transaction authorized by MPI, Refnr ' . $refnr;
+          $authorized = TRUE;
         }
         else if ($txtype == '05')
         {
           $newState = 'PROCESSING';
-          $authorized = true;
+          $authorized = TRUE;
           $comment = 'Transaction approved by MPI, Refnr ' . $refnr;
         }
         else
@@ -286,71 +335,15 @@ class ControllerPaymentEuropabank extends Controller {
         $comment = 'Transaction encountered exception';
         break;
     }
-    //TODO Make good test here.
-    if (){
-        $this->model_checkout_order->confirm( $orderid, $this->config->get( 'europabank_order_status_id' ) );
 
-        $payed = true;
-
-      } else {
-
-        $payed = false;
-
-      }
-
+    if ($authorized&&($signature==$_REQUEST['Hash']))
+    {
+      return  true;
     } else {
-
-      $payed = true;
-
+      return false;
     }
-
-    if ( isset( $payed ) && $payed ) {
-
-      $this->model_payment_europabank->deleteOrderTransaction( $trxid );
-
-      header( 'Location: ' . HTTPS_SERVER . 'index.php?route=checkout/success' );
-
-    } else {
-
-      echo 'Helaas, de betaling is niet gelukt..';
-
-    }
-
   }
 
-  /**
-   * Make sure a order is updated, even if the customer doesn't reach the callback page
-   *
-   * @return void
-   */
-  public function report( ) {
-
-    $this->EuropabankIdeal = new EuropabankIdeal( );
-
-    $this->load->model( 'checkout/order' );
-    $this->load->model( 'payment/europabank' );
-
-    if ( isset( $this->request->get[ 'trxid' ] ) ) {
-
-      $trxId = $this->request->get[ 'trxid' ];
-      $layout = $this->config->get( 'europabank_layoutcode' );
-      $testmode = $this->config->get( 'europabank_testmode' );
-
-      $payed = $this->EuropabankIdeal->setLayout( (int)$layout )
-                      ->setTestmode( ( $testmode == '1' ) )
-                      ->setTransactionID( $trxId )
-                      ->checkPayment( );
-
-      if ( $payed ) {
-
-        $orderId = $this->model_payment_europabank->getOrderIdByTransaction( $trxId );
-        $this->model_checkout_order->confirm( $orderId, $this->config->get( 'europabank_order_status_id' ) );
-
-      }
-
-    }
-
-  }
 
   /**
    * Europabank utility
